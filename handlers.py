@@ -3,7 +3,7 @@ from aiogram.dispatcher import FSMContext
 from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard,get_subscription_model_keyboard, check_cb, admin_cb, get_post_payment_keyboard, get_subscription_model_keyboard
 from config import ADMINS, bot
 import asyncio
-from states import SubscriptionProcess
+from states import SubscriptionProcess, ModelCreation
 from database import db, cur, init_db
 import sqlite3 as sq
 
@@ -92,6 +92,9 @@ def register_handlers(dp: Dispatcher):
     dp.register_message_handler(subscription_level_chosen, state=SubscriptionProcess.ChoosingLevel)
     dp.register_message_handler(check_submitted, content_types=['photo'], state=SubscriptionProcess.WaitingForCheck)
     dp.register_message_handler(payment_confirmed, text='Оплатил', state=SubscriptionProcess.CheckSubmitted)
+    dp.register_callback_query_handler(create_model_callback_handler, lambda c: c.data == 'create_model', state='*')
+    dp.register_message_handler(model_nickname_received, state=ModelCreation.waiting_for_nickname)
+    dp.register_message_handler(model_price_received, state=ModelCreation.waiting_for_price)
 
     @dp.message_handler(commands=['accept'])
     async def accept_payment(message: types.Message):
@@ -117,10 +120,14 @@ def register_handlers(dp: Dispatcher):
                                reply_markup=get_subscription_model_keyboard())
         await message.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
 
-    @dp.callback_query_handler(text="create_model", user_id=ADMINS)
-    async def handle_create_model(callback_query: types.CallbackQuery):
-        # Здесь может быть логика создания модели
-        await callback_query.answer("Функционал создания модели.", show_alert=True)
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    @dp.message_handler(lambda message: message.text == "Создать модель", state='*')
+    async def handle_create_model(message: types.Message):
+        # Установка состояния для ввода никнейма модели
+        await ModelCreation.waiting_for_nickname.set()
+        await message.answer("Введите никнейм модели:")
 
     @dp.callback_query_handler(text="subscribers", user_id=ADMINS)
     async def handle_subscribers(callback_query: types.CallbackQuery):
@@ -138,3 +145,25 @@ def register_handlers(dp: Dispatcher):
             subscribers_list += f"ID: {subscriber[0]}\n"
 
         await callback_query.message.answer(subscribers_list)
+
+
+async def create_model_callback_handler(query: types.CallbackQuery):
+    await ModelCreation.waiting_for_nickname.set()
+    await query.message.answer("Введите никнейм модели:")
+
+async def model_nickname_received(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['nickname'] = message.text
+    await ModelCreation.next()
+    await message.answer("Теперь введите цену сборов:")
+
+async def model_price_received(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['price'] = float(message.text)
+    # Сохраняем модель в базу данных
+    with sq.connect('tg.db') as db:
+        cur = db.cursor()
+        cur.execute("INSERT INTO models (nickname, price) VALUES (?, ?)", (data['nickname'], data['price']))
+        db.commit()
+    await state.finish()
+    await message.answer("Модель успешно создана!")
