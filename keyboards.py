@@ -48,3 +48,11 @@ def get_post_payment_keyboard():
         KeyboardButton(text="Меню")
     )
     return markup
+
+
+def get_subscription_model_keyboard():
+    # Возвращаем клавиатуру для пользователей с активной подпиской
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
+    markup.add(KeyboardButton(text="Моя подписка"))
+    markup.add(KeyboardButton(text="Модели"))
+    return markup

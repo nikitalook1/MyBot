@@ -1,10 +1,11 @@
 from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
-from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard,get_subscription_model_keyboard, check_cb, admin_cb, get_post_payment_keyboard
+from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard,get_subscription_model_keyboard, check_cb, admin_cb, get_post_payment_keyboard, get_subscription_model_keyboard
 from config import ADMINS, bot
 import asyncio
 from states import SubscriptionProcess
 from database import db, cur, init_db
+import sqlite3 as sq
 
 # Словарь для хранения информации о чеках, ожидающих проверки
 pending_checks = {}
@@ -28,16 +29,18 @@ async def check_submitted(message: types.Message, state: FSMContext):
 
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
-    db, cur = init_db()
-
-    cur.execute("INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)", (user_id,))
-    db.commit()
-    db.close()
+    with sq.connect('tg.db') as db:
+        cur = db.cursor()
+        cur.execute("INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)", (user_id,))
+        db.commit()
+        cur.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
+        sub_status = cur.fetchone()
 
     if user_id in ADMINS:
         await message.answer("Вы администратор.", reply_markup=get_admin_keyboard())
+    elif sub_status and sub_status[0]:
+        await message.answer("Что вы хотите сделать?", reply_markup=get_subscription_model_keyboard())
     else:
-        # Pass the required arguments to get_main_keyboard
         await message.answer("Что вы хотите сделать?", reply_markup=get_main_keyboard(user_id, ADMINS))
 
 
