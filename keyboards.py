@@ -11,19 +11,22 @@ def get_main_keyboard(user_id, admins):
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
     markup.add(KeyboardButton(text="Подписка"))
-    markup.add(KeyboardButton(text="Помощь"))
+    markup.add(KeyboardButton(text="Модель"))
     return markup
 
-def get_check_keyboard(user_id):
-    """
-    Создает клавиатуру с кнопками для подтверждения или отклонения чека.
-    """
-    markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton(text="Подтвердить", callback_data=check_cb.new(user_id=user_id, action="confirm")),
-        InlineKeyboardButton(text="Отклонить", callback_data=check_cb.new(user_id=user_id, action="reject"))
-    )
+def get_subscription_model_keyboard():
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton("моя подписка"))
+    keyboard.add(KeyboardButton("модель"))
+    return keyboard
+
+def get_admin_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
+    markup.row_width = 2
+    markup.add(KeyboardButton("Создать модель", callback_data="create_model"),
+               KeyboardButton("Подписчики", callback_data="subscribers"))
     return markup
+
 
 def get_subscription_levels_keyboard():
     """
