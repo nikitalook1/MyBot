@@ -33,12 +33,8 @@ def get_subscription_levels_keyboard():
     Создает клавиатуру для выбора уровня подписки.
     """
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
-    markup.add(
-        KeyboardButton(text="1 уровень"),
-        KeyboardButton(text="2 уровень"),
-        KeyboardButton(text="3 уровень"),
-        KeyboardButton(text="4 уровень")
-    )
+    markup.add(KeyboardButton(text="1 уровень"), KeyboardButton(text="2 уровень"), KeyboardButton(text="3 уровень"),
+               KeyboardButton(text="4 уровень"))
     return markup
 
 def get_post_payment_keyboard():

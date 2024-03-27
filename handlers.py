@@ -2,12 +2,13 @@ from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard,get_subscription_model_keyboard, check_cb, admin_cb, get_post_payment_keyboard
 from config import ADMINS, bot
-import logging
+import asyncio
 from states import SubscriptionProcess
 from database import db, cur, init_db
 
 # Словарь для хранения информации о чеках, ожидающих проверки
 pending_checks = {}
+next_check_id = 1
 
 async def subscription_chosen(message: types.Message):
     await SubscriptionProcess.ChoosingLevel.set()
@@ -21,7 +22,6 @@ async def subscription_level_chosen(message: types.Message, state: FSMContext):
 
 async def check_submitted(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
-        # Сохраняем file_id последней фотографии из сообщения
         data['check_file_id'] = message.photo[-1].file_id
     await SubscriptionProcess.CheckSubmitted.set()
     await message.answer("Чек загружен. Нажмите 'Оплатил', если хотите отправить чек на проверку.", reply_markup=get_post_payment_keyboard())
@@ -30,44 +30,39 @@ async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     db, cur = init_db()
 
-    # Insert or ignore if the user already exists
     cur.execute("INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)", (user_id,))
     db.commit()
     db.close()
 
-    # Respond to the user
-    await message.answer("Привет! Добро пожаловать в нашего бота.")
-
-    # Check if the user is an admin to show the admin panel or the main menu
     if user_id in ADMINS:
         await message.answer("Вы администратор.", reply_markup=get_admin_keyboard())
     else:
-        await message.answer("Что вы хотите сделать?", reply_markup=get_main_keyboard())
-
+        # Pass the required arguments to get_main_keyboard
+        await message.answer("Что вы хотите сделать?", reply_markup=get_main_keyboard(user_id, ADMINS))
 
 
 async def payment_confirmed(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
-        check_file_id = data.get('check_file_id')
-        subscription_level = data.get('level')
+        if 'check_file_id' in data:
+            user_id = message.from_user.id
+            global next_check_id
+            check_id = next_check_id
+            next_check_id += 1
 
-    if check_file_id:
-        user_id = message.from_user.id
-        global next_check_id
-        check_id = next_check_id
-        next_check_id += 1
+            pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data['level']}
 
-        pending_checks[check_id] = {'user_id': user_id, 'check_file_id': check_file_id, 'level': subscription_level}
+            for admin_id in ADMINS:
+                await bot.send_photo(admin_id, data['check_file_id'], caption=f"Новый чек #{check_id} от пользователя {user_id}. Для подтверждения напишите /accept {check_id}")
 
-        for admin_id in ADMINS:
-            await bot.send_photo(admin_id, check_file_id, caption=f"Новый чек #{check_id} от пользователя {user_id}. Для подтверждения напишите /accept {check_id}")
-
-        await message.answer("Чек отправлен на проверку. Ожидайте подтверждения админом.")
-    else:
-        await message.answer("Чек не найден, попробуйте еще раз.")
+            await message.answer("Чек отправлен на проверку. Ожидайте подтверждения админом.")
+        else:
+            await message.answer("Чек не найден, попробуйте еще раз.")
 
     await state.finish()
 
+async def run_in_executor(func, *args):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, func, *args)
 
 def update_subscription_level(user_id, level):
     # List of valid subscription levels
@@ -105,7 +100,7 @@ def register_handlers(dp: Dispatcher):
             _, check_id_str = message.text.split()
             check_id = int(check_id_str)
         except ValueError:
-            await message.answer("Некорректный формат команды. Используйте accept {номер чека}.")
+            await message.answer("Некорректный формат команды. Используйте /accept {номер чека}.")
             return
 
         if check_id not in pending_checks:
@@ -113,13 +108,9 @@ def register_handlers(dp: Dispatcher):
             return
 
         check_info = pending_checks.pop(check_id)
-        user_id = check_info['user_id']
-        subscription_level = check_info['level']
+        await run_in_executor(update_subscription_level, check_info['user_id'], check_info['level'])
 
-        # Here we call the function to update the DB with the new subscription level
-        update_subscription_level(user_id, subscription_level)
-
-        await bot.send_message(user_id, "Ваша подписка успешно активирована.",
+        await bot.send_message(check_info['user_id'], "Ваша подписка успешно активирована.",
                                reply_markup=get_subscription_model_keyboard())
         await message.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
 
