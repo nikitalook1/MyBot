@@ -34,7 +34,7 @@ async def start_cmd(message: types.Message):
         cur.execute("INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)", (user_id,))
         db.commit()
         cur.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
-        sub_status = cur.fetchone()
+        sub_status = cur.fetchone()#vjdvch
 
     if user_id in ADMINS:
         await message.answer("Вы администратор.", reply_markup=get_admin_keyboard())
