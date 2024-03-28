@@ -141,23 +141,6 @@ def register_handlers(dp: Dispatcher):
         await ModelCreation.waiting_for_nickname.set()
         await message.answer("Введите никнейм модели:")
 
-    @dp.callback_query_handler(text="subscribers", user_id=ADMINS)
-    async def handle_subscribers(callback_query: types.CallbackQuery):
-        # Получаем список всех подписчиков из базы данных
-        cur.execute("SELECT user_id FROM subscribers WHERE is_sub = 1")
-        subscribers = cur.fetchall()
-
-        if not subscribers:
-            await callback_query.message.answer("Список подписчиков пуст.")
-            return
-
-        # Формируем сообщение со списком подписчиков
-        subscribers_list = "Список подписчиков:\n"
-        for subscriber in subscribers:
-            subscribers_list += f"ID: {subscriber[0]}\n"
-
-        await callback_query.message.answer(subscribers_list)
-
     @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS)
     async def get_checks(message: types.Message):
         if not pending_checks:
@@ -203,24 +186,29 @@ def register_handlers(dp: Dispatcher):
             await message.answer("У вас нет подписки, сначала приобретите её.")
             return
 
-        with sq.connect('tg.db') as db:
-            cur = db.cursor()
-            # Изменено на получение всех данных модели, включая photo
-            cur.execute("SELECT id, nickname, price, photo FROM models")
-            models = cur.fetchall()
+        # Изменено на получение всех данных модели, включая photo и collected_amount
+        cur.execute("SELECT id, nickname, price, photo, collected_amount FROM models")
+        models = cur.fetchall()
 
         if not models:
             await message.answer("Моделей пока нет.")
             return
 
-        # Изменено на отправку каждой модели с фото и описанием напрямую
+        # Изменено на отправку каждой модели с фото, описанием и суммой поддержки напрямую
         for model in models:
-            model_id, nickname, price, photo_file_id = model
-            response_text = f"Никнейм: {nickname}\nЦена: {price}"
+            model_id, nickname, price, photo_file_id, collected_amount = model
+            response_text = f"Никнейм: {nickname}\nЦель: {price}\nСобрано: {collected_amount}"
+
+            # Создаем inline кнопку "Поддержать"
+            support_button = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Поддержать", callback_data=f"support_{model_id}")
+            )
+
             if photo_file_id:
-                await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text)
+                await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text,
+                                     reply_markup=support_button)
             else:
-                await message.answer(text=response_text)
+                await message.answer(text=response_text, reply_markup=support_button)
 
     @dp.message_handler(content_types=['photo'], state=ModelCreation.waiting_for_photo)
     async def model_photo_received(message: types.Message, state: FSMContext):
@@ -250,4 +238,29 @@ def register_handlers(dp: Dispatcher):
             await bot.send_photo(callback_query.from_user.id, photo=photo_file_id, caption=response_text)
         else:
             await bot.send_message(callback_query.from_user.id, "Модель не найдена.")
-        await callback_query.answer()  # Необходимо для уведомления Telegram о том, что callback был обработан
+        await callback_query.answer()
+
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("support_"))
+    async def prompt_support_amount(callback_query: types.CallbackQuery, state: FSMContext):
+        await state.update_data(model_id=callback_query.data.split("_")[1])
+        await ModelCreation.waiting_for_support_amount.set()
+        await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
+        await callback_query.answer()
+
+    @dp.message_handler(state=ModelCreation.waiting_for_support_amount, content_types=types.ContentTypes.TEXT)
+    async def process_support_amount(message: types.Message, state: FSMContext):
+        try:
+            amount = float(message.text)
+            user_data = await state.get_data()
+            model_id = user_data['model_id']
+
+            with sq.connect('tg.db') as db:
+                cur = db.cursor()
+                cur.execute("UPDATE models SET collected_amount = collected_amount + ? WHERE id = ?",
+                            (amount, model_id))
+                db.commit()
+
+            await message.answer("Благодарим за вашу поддержку!")
+            await state.reset_state()
+        except ValueError:
+            await message.answer("Пожалуйста, введите корректную сумму.")

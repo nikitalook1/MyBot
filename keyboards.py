@@ -55,3 +55,10 @@ def get_subscription_model_keyboard():
     markup.add(KeyboardButton(text="Моя подписка"))
     markup.add(KeyboardButton(text="Модели"))
     return markup
+
+def get_payment_support():
+    markup = InlineKeyboardMarkup()
+    support_button = InlineKeyboardButton(text="Поддержать", callback_data="support")
+    markup.add(support_button)
+
+    return markup
