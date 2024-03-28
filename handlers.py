@@ -7,6 +7,7 @@ from states import SubscriptionProcess, ModelCreation
 from database import db, cur, init_db
 import sqlite3 as sq
 
+
 # Словарь для хранения информации о чеках, ожидающих проверки
 pending_checks = {}
 next_check_id = 1
@@ -52,10 +53,8 @@ async def payment_confirmed(message: types.Message, state: FSMContext):
             check_id = next_check_id
             next_check_id += 1
 
-            pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data['level']}
-
-            for admin_id in ADMINS:
-                await bot.send_photo(admin_id, data['check_file_id'], caption=f"Новый чек #{check_id} от пользователя {user_id}. Для подтверждения напишите /accept {check_id}")
+            pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'],
+                                        'level': data['level']}
 
             await message.answer("Чек отправлен на проверку. Ожидайте подтверждения админом.")
         else:
@@ -85,6 +84,26 @@ def update_subscription_level(user_id, level):
     finally:
         db.close()
 
+async def create_model_callback_handler(query: types.CallbackQuery):
+    await ModelCreation.waiting_for_nickname.set()
+    await query.message.answer("Введите никнейм модели:")
+
+async def model_nickname_received(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['nickname'] = message.text
+    await ModelCreation.next()
+    await message.answer("Теперь введите цену сборов:")
+
+async def model_price_received(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['price'] = float(message.text)
+    # Сохраняем модель в базу данных
+    with sq.connect('tg.db') as db:
+        cur = db.cursor()
+        cur.execute("INSERT INTO models (nickname, price) VALUES (?, ?)", (data['nickname'], data['price']))
+        db.commit()
+    await state.finish()
+    await message.answer("Модель успешно создана!")
 
 def register_handlers(dp: Dispatcher):
     dp.register_message_handler(start_cmd, commands=['start'])
@@ -120,9 +139,6 @@ def register_handlers(dp: Dispatcher):
                                reply_markup=get_subscription_model_keyboard())
         await message.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
 
-    import logging
-    logging.basicConfig(level=logging.INFO)
-
     @dp.message_handler(lambda message: message.text == "Создать модель", state='*')
     async def handle_create_model(message: types.Message):
         # Установка состояния для ввода никнейма модели
@@ -146,24 +162,34 @@ def register_handlers(dp: Dispatcher):
 
         await callback_query.message.answer(subscribers_list)
 
+    @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS)
+    async def get_checks(message: types.Message):
+        if not pending_checks:
+            await message.answer("Нет чеков, ожидающих подтверждения.")
+            return
 
-async def create_model_callback_handler(query: types.CallbackQuery):
-    await ModelCreation.waiting_for_nickname.set()
-    await query.message.answer("Введите никнейм модели:")
+        # Отправляем каждый чек администратору
+        for check_id, info in pending_checks.items():
+            user_id = info['user_id']
+            file_id = info['check_file_id']
+            level = info.get('level', 'Не указан')
+            caption = f"Чек #{check_id} от пользователя {user_id}, Уровень подписки: {level}."
+            await bot.send_photo(message.from_user.id, file_id, caption=caption)
 
-async def model_nickname_received(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['nickname'] = message.text
-    await ModelCreation.next()
-    await message.answer("Теперь введите цену сборов:")
+    @dp.message_handler(lambda message: message.text == "Моя подписка")
+    async def show_subscription_info(message: types.Message):
+        user_id = message.from_user.id
+        with sq.connect('tg.db') as db:
+            cur = db.cursor()
+            # Запрос к базе данных для получения информации о подписке пользователя
+            cur.execute("SELECT sub_level, is_sub FROM subscribers WHERE user_id = ?", (user_id,))
+            subscription_info = cur.fetchone()
 
-async def model_price_received(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['price'] = float(message.text)
-    # Сохраняем модель в базу данных
-    with sq.connect('tg.db') as db:
-        cur = db.cursor()
-        cur.execute("INSERT INTO models (nickname, price) VALUES (?, ?)", (data['nickname'], data['price']))
-        db.commit()
-    await state.finish()
-    await message.answer("Модель успешно создана!")
+        if subscription_info and subscription_info[1]:  # Проверяем, что подписка активна
+            # Формируем и отправляем сообщение с информацией о подписке
+            subscription_level = subscription_info[0]
+            response_text = f"Ваша подписка: {subscription_level}.\n\nДетали подписки: [Детали подписки здесь]"
+            await message.answer(response_text, parse_mode=types.ParseMode.MARKDOWN)
+        else:
+            # Сообщение пользователю, если подписка не найдена или не активна
+            await message.answer("У вас нет активной подписки.")
