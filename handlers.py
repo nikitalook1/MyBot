@@ -1,10 +1,11 @@
 from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
-from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard,get_subscription_model_keyboard, check_cb, admin_cb, get_post_payment_keyboard, get_subscription_model_keyboard
+from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard, get_post_payment_keyboard, get_subscription_model_keyboard
 from config import ADMINS, bot
 import asyncio
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from states import SubscriptionProcess, ModelCreation
-from database import db, cur, init_db
+from database import cur, init_db
 import sqlite3 as sq
 
 
@@ -67,7 +68,6 @@ async def run_in_executor(func, *args):
     await loop.run_in_executor(None, func, *args)
 
 def update_subscription_level(user_id, level):
-    # List of valid subscription levels
     valid_levels = ["1 уровень", "2 уровень", "3 уровень", "4 уровень"]
 
     if level not in valid_levels:
@@ -97,13 +97,9 @@ async def model_nickname_received(message: types.Message, state: FSMContext):
 async def model_price_received(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['price'] = float(message.text)
-    # Сохраняем модель в базу данных
-    with sq.connect('tg.db') as db:
-        cur = db.cursor()
-        cur.execute("INSERT INTO models (nickname, price) VALUES (?, ?)", (data['nickname'], data['price']))
-        db.commit()
-    await state.finish()
-    await message.answer("Модель успешно создана!")
+    await ModelCreation.waiting_for_photo.set()
+    await message.answer("Теперь отправьте фото модели.")
+
 
 def register_handlers(dp: Dispatcher):
     dp.register_message_handler(start_cmd, commands=['start'])
@@ -207,16 +203,51 @@ def register_handlers(dp: Dispatcher):
             await message.answer("У вас нет подписки, сначала приобретите её.")
             return
 
-        # Если подписка есть, выводим список моделей
         with sq.connect('tg.db') as db:
             cur = db.cursor()
-            cur.execute("SELECT nickname, price FROM models")
+            # Изменено на получение всех данных модели, включая photo
+            cur.execute("SELECT id, nickname, price, photo FROM models")
             models = cur.fetchall()
 
         if not models:
             await message.answer("Моделей пока нет.")
             return
 
+        # Изменено на отправку каждой модели с фото и описанием напрямую
         for model in models:
-            nickname, price = model
-            await message.answer(f"Никнейм: {nickname}, Цена: {price}")
+            model_id, nickname, price, photo_file_id = model
+            response_text = f"Никнейм: {nickname}\nЦена: {price}"
+            if photo_file_id:
+                await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text)
+            else:
+                await message.answer(text=response_text)
+
+    @dp.message_handler(content_types=['photo'], state=ModelCreation.waiting_for_photo)
+    async def model_photo_received(message: types.Message, state: FSMContext):
+        async with state.proxy() as data:
+            # Предполагаем, что фотография одна и берем последнюю в списке
+            data['photo'] = message.photo[-1].file_id
+            # Сохраняем модель в базу данных
+            with sq.connect('tg.db') as db:
+                cur = db.cursor()
+                cur.execute("INSERT INTO models (nickname, price, photo) VALUES (?, ?, ?)",
+                            (data['nickname'], data['price'], data['photo']))
+                db.commit()
+        await state.finish()
+        await message.answer("Модель успешно создана с фото!")
+
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("show_"))
+    async def show_model_details(callback_query: types.CallbackQuery):
+        model_id = callback_query.data.split("_")[1]
+        with sq.connect('tg.db') as db:
+            cur = db.cursor()
+            cur.execute("SELECT nickname, price, photo FROM models WHERE id=?", (model_id,))
+            model = cur.fetchone()
+
+        if model:
+            nickname, price, photo_file_id = model
+            response_text = f"Никнейм: {nickname}\nЦена: {price}"
+            await bot.send_photo(callback_query.from_user.id, photo=photo_file_id, caption=response_text)
+        else:
+            await bot.send_message(callback_query.from_user.id, "Модель не найдена.")
+        await callback_query.answer()  # Необходимо для уведомления Telegram о том, что callback был обработан

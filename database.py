@@ -4,7 +4,7 @@ def init_db():
     db = sq.connect('tg.db')
     cur = db.cursor()
 
-    # Создание таблицы subscribers
+    # Создание таблицы subscribers, если она еще не существует
     cur.execute('''
     CREATE TABLE IF NOT EXISTS subscribers (
         user_id INTEGER PRIMARY KEY,
@@ -13,12 +13,13 @@ def init_db():
     );
     ''')
 
-    # Создание таблицы models
+    # Создание таблицы models с добавлением колонки для фото, если она еще не существует
     cur.execute('''
     CREATE TABLE IF NOT EXISTS models (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nickname TEXT NOT NULL,
-        price REAL NOT NULL
+        price REAL NOT NULL,
+        photo TEXT  -- Добавлена новая колонка для хранения file_id фотографии
     );
     ''')
 
