@@ -193,3 +193,30 @@ def register_handlers(dp: Dispatcher):
         else:
             # Сообщение пользователю, если подписка не найдена или не активна
             await message.answer("У вас нет активной подписки.")
+
+    @dp.message_handler(lambda message: message.text == "Модели")
+    async def handle_models_request(message: types.Message):
+        user_id = message.from_user.id
+        with sq.connect('tg.db') as db:
+            cur = db.cursor()
+            # Проверяем наличие подписки у пользователя
+            cur.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
+            sub_status = cur.fetchone()
+
+        if not sub_status or not sub_status[0]:
+            await message.answer("У вас нет подписки, сначала приобретите её.")
+            return
+
+        # Если подписка есть, выводим список моделей
+        with sq.connect('tg.db') as db:
+            cur = db.cursor()
+            cur.execute("SELECT nickname, price FROM models")
+            models = cur.fetchall()
+
+        if not models:
+            await message.answer("Моделей пока нет.")
+            return
+
+        for model in models:
+            nickname, price = model
+            await message.answer(f"Никнейм: {nickname}, Цена: {price}")
