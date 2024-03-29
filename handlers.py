@@ -224,6 +224,24 @@ def register_handlers(dp: Dispatcher):
         await state.finish()
         await message.answer("Модель успешно создана с фото!")
 
+    @dp.message_handler(state=ModelCreation.waiting_for_support_amount, content_types=types.ContentTypes.TEXT)
+    async def process_support_amount(message: types.Message, state: FSMContext):
+        try:
+            amount = float(message.text)
+            user_data = await state.get_data()
+            model_id = user_data['model_id']
+
+            with sq.connect('tg.db') as db:
+                cur = db.cursor()
+                cur.execute("UPDATE models SET collected_amount = collected_amount + ? WHERE id = ?",
+                            (amount, model_id))
+                db.commit()
+
+            await message.answer("Благодарим за вашу поддержку!")
+            await state.reset_state()
+        except ValueError:
+            await message.answer("Пожалуйста, введите корректную сумму.")
+
     @dp.callback_query_handler(lambda c: c.data and c.data.startswith("show_"))
     async def show_model_details(callback_query: types.CallbackQuery):
         model_id = callback_query.data.split("_")[1]
@@ -247,20 +265,3 @@ def register_handlers(dp: Dispatcher):
         await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
         await callback_query.answer()
 
-    @dp.message_handler(state=ModelCreation.waiting_for_support_amount, content_types=types.ContentTypes.TEXT)
-    async def process_support_amount(message: types.Message, state: FSMContext):
-        try:
-            amount = float(message.text)
-            user_data = await state.get_data()
-            model_id = user_data['model_id']
-
-            with sq.connect('tg.db') as db:
-                cur = db.cursor()
-                cur.execute("UPDATE models SET collected_amount = collected_amount + ? WHERE id = ?",
-                            (amount, model_id))
-                db.commit()
-
-            await message.answer("Благодарим за вашу поддержку!")
-            await state.reset_state()
-        except ValueError:
-            await message.answer("Пожалуйста, введите корректную сумму.")
