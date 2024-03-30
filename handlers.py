@@ -17,7 +17,15 @@ async def subscription_chosen(message: types.Message):
     await SubscriptionProcess.ChoosingLevel.set()
     await message.answer("Выберите уровень подписки:", reply_markup=get_subscription_levels_keyboard())
 
+
 async def subscription_level_chosen(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        # Логика для возврата на предыдущий шаг
+        await message.answer("Выберите действие.",
+                             reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))
+        await state.finish()  # Завершаем текущее состояние
+        return
+
     async with state.proxy() as data:
         data['level'] = message.text
     await SubscriptionProcess.WaitingForCheck.set()
@@ -289,3 +297,23 @@ def register_handlers(dp: Dispatcher):
         await ModelCreation.waiting_for_support_amount.set()
         await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
         await callback_query.answer()
+
+    # Регистрация обработчика кнопки "Назад" с высоким приоритетом
+    @dp.message_handler(lambda message: message.text == "Назад", state="*")
+    async def handle_back_button(message: types.Message, state: FSMContext):
+        current_state = await state.get_state()
+        if current_state:
+            # Логика для определения, к какому набору кнопок возвращаться
+            await state.finish()  # Сбрасываем текущее состояние пользователя
+            if current_state.startswith("SubscriptionProcess"):
+                # Если пользователь находился в процессе подписки, возвращаем в главное меню
+                await message.answer("Что вы хотите сделать?",
+                                     reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))
+            elif current_state.startswith("ModelCreation"):
+                # Если пользователь находился в процессе создания модели, возвращаем в меню подписки
+                await subscription_chosen(message)
+            # Добавьте другие условия для обработки различных состояний
+        else:
+            # Если состояние не было определено, возвращаем пользователя в главное меню
+            await message.answer("Выберите действие.",
+                                 reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))
