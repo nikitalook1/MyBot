@@ -26,4 +26,21 @@ def init_db():
     db.commit()
     return db, cur
 
+def update_subscription_status(user_id, is_sub):
+    """Обновляет статус подписки пользователя.
+
+    Args:
+        user_id (int): Идентификатор пользователя.
+        is_sub (bool): Новый статус подписки (True для активной подписки, False для неактивной).
+    """
+    db = sq.connect('tg.db')  # Подключаемся к базе данных
+    cur = db.cursor()  # Создаем курсор
+
+    # Выполняем обновление статуса подписки для пользователя
+    cur.execute("UPDATE subscribers SET is_sub = ? WHERE user_id = ?", (is_sub, user_id))
+    db.commit()  # Применяем изменения
+
+    db.close()  # Закрываем подключение к базе данных
+
+
 db, cur = init_db()

@@ -5,7 +5,7 @@ from config import ADMINS, bot
 import asyncio
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from states import SubscriptionProcess, ModelCreation
-from database import cur, init_db
+from database import cur, init_db, update_subscription_status
 import sqlite3 as sq
 
 
@@ -162,20 +162,32 @@ def register_handlers(dp: Dispatcher):
         await ModelCreation.waiting_for_nickname.set()
         await message.answer("Введите никнейм модели:")
 
-    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("confirm_"))
+    @dp.callback_query_handler(lambda c: c.data.startswith("confirm_"))
     async def confirm_payment(callback_query: types.CallbackQuery):
         _, check_id_str = callback_query.data.split("_")
         check_id = int(check_id_str)
 
+        # Проверяем, существует ли чек с таким ID в списке ожидающих проверку
         if check_id in pending_checks:
+            # Извлекаем информацию о чеке и удаляем ее из списка ожидающих
             check_info = pending_checks.pop(check_id)
-            update_subscription_level(check_info['user_id'], check_info['level'])
-            subscription_keyboard = get_subscription_model_keyboard()
-            await bot.send_message(check_info['user_id'], "Ваша подписка подтверждена.",
-                                   reply_markup=subscription_keyboard)
-            await callback_query.answer(f"Чек #{check_id} подтвержден.")
+
+            # Обновляем статус подписки пользователя в базе данных
+            update_subscription_status(check_info['user_id'],
+                                       True)  # Предполагается, что функция update_subscription_status принимает ID пользователя и новый статус подписки
+
+            # Отправляем сообщение пользователю о подтверждении его подписки
+            await bot.send_message(check_info['user_id'], "Ваша подписка успешно активирована.")
+
+            # Уведомляем админа о том, что чек был успешно обработан
+            await callback_query.answer("Подписка активирована и подтверждена.")
+
+            # Удаляем сообщение с чеком после подтверждения
+            await bot.delete_message(chat_id=callback_query.message.chat.id,
+                                     message_id=callback_query.message.message_id)
         else:
-            await callback_query.answer("Чек не найден.")
+            # Если чек с таким ID не найден в списке ожидающих
+            await callback_query.answer("Чек не найден или уже обработан.", show_alert=True)
 
     @dp.callback_query_handler(lambda c: c.data and c.data.startswith("decline_"))
     async def decline_payment(callback_query: types.CallbackQuery):
