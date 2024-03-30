@@ -23,6 +23,7 @@ def get_admin_keyboard():
     markup.row_width = 2
     markup.add(KeyboardButton("Создать модель", callback_data="create_model"),
                KeyboardButton("Подписчики", callback_data="subscribers"))
+
     return markup
 
 

@@ -23,11 +23,22 @@ async def subscription_level_chosen(message: types.Message, state: FSMContext):
     await SubscriptionProcess.WaitingForCheck.set()
     await message.answer("Пожалуйста, прикрепите чек об оплате.")
 
+
 async def check_submitted(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
         data['check_file_id'] = message.photo[-1].file_id
+
+    global next_check_id
+    check_id = next_check_id
+    next_check_id += 1
+    user_id = message.from_user.id
+
+    # Сохраняем информацию о чеке в pending_checks, но не отправляем администратору
+    pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data.get('level')}
+
     await SubscriptionProcess.CheckSubmitted.set()
-    await message.answer("Чек загружен. Нажмите 'Оплатил', если хотите отправить чек на проверку.", reply_markup=get_post_payment_keyboard())
+    await message.answer("Чек загружен и будет проверен после подтверждения админом.")
+
 
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
@@ -54,14 +65,22 @@ async def payment_confirmed(message: types.Message, state: FSMContext):
             check_id = next_check_id
             next_check_id += 1
 
-            pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'],
-                                        'level': data['level']}
+            pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data['level']}
+
+            # Создаем Inline кнопку "Подтвердить"
+            confirm_button = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Подтвердить", callback_data=f"confirm_{check_id}")
+            )
+            # Отправляем сообщение с фото чека и кнопкой администратору
+            for admin_id in ADMINS:
+                await bot.send_photo(admin_id, data['check_file_id'], caption=f"Новый чек #{check_id} от пользователя {user_id}.", reply_markup=confirm_button)
 
             await message.answer("Чек отправлен на проверку. Ожидайте подтверждения админом.")
         else:
             await message.answer("Чек не найден, попробуйте еще раз.")
 
     await state.finish()
+
 
 async def run_in_executor(func, *args):
     loop = asyncio.get_running_loop()
@@ -111,21 +130,21 @@ def register_handlers(dp: Dispatcher):
     dp.register_message_handler(model_nickname_received, state=ModelCreation.waiting_for_nickname)
     dp.register_message_handler(model_price_received, state=ModelCreation.waiting_for_price)
 
-    @dp.message_handler(commands=['accept'])
-    async def accept_payment(message: types.Message):
-        if message.from_user.id not in ADMINS:
-            await message.answer("У вас нет доступа к этой команде.")
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("confirm_"))
+    async def accept_payment(callback_query: types.CallbackQuery):
+        if callback_query.from_user.id not in ADMINS:
+            await callback_query.answer("У вас нет доступа к этой команде.")
             return
 
         try:
-            _, check_id_str = message.text.split()
+            _, check_id_str = callback_query.data.split()
             check_id = int(check_id_str)
         except ValueError:
-            await message.answer("Некорректный формат команды. Используйте /accept {номер чека}.")
+            await callback_query.answer("Некорректный формат команды. Используйте /accept {номер чека}.")
             return
 
         if check_id not in pending_checks:
-            await message.answer(f"Чек с ID {check_id} не найден.")
+            await callback_query.answer(f"Чек с ID {check_id} не найден.")
             return
 
         check_info = pending_checks.pop(check_id)
@@ -133,7 +152,7 @@ def register_handlers(dp: Dispatcher):
 
         await bot.send_message(check_info['user_id'], "Ваша подписка успешно активирована.",
                                reply_markup=get_subscription_model_keyboard())
-        await message.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
+        await callback_query.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
 
     @dp.message_handler(lambda message: message.text == "Создать модель", state='*')
     async def handle_create_model(message: types.Message):
@@ -153,7 +172,13 @@ def register_handlers(dp: Dispatcher):
             file_id = info['check_file_id']
             level = info.get('level', 'Не указан')
             caption = f"Чек #{check_id} от пользователя {user_id}, Уровень подписки: {level}."
-            await bot.send_photo(message.from_user.id, file_id, caption=caption)
+
+            # Создаем Inline кнопку "Подтвердить"
+            confirm_button = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Подтвердить", callback_data=f"confirm_{check_id}")
+            )
+
+            await bot.send_photo(message.from_user.id, file_id, caption=caption, reply_markup=confirm_button)
 
     @dp.message_handler(lambda message: message.text == "Моя подписка")
     async def show_subscription_info(message: types.Message):
@@ -264,4 +289,3 @@ def register_handlers(dp: Dispatcher):
         await ModelCreation.waiting_for_support_amount.set()
         await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
         await callback_query.answer()
-
