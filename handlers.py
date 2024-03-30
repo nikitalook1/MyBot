@@ -138,29 +138,23 @@ def register_handlers(dp: Dispatcher):
     dp.register_message_handler(model_nickname_received, state=ModelCreation.waiting_for_nickname)
     dp.register_message_handler(model_price_received, state=ModelCreation.waiting_for_price)
 
-    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("confirm_"))
-    async def accept_payment(callback_query: types.CallbackQuery):
-        if callback_query.from_user.id not in ADMINS:
-            await callback_query.answer("У вас нет доступа к этой команде.")
+    @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS)
+    async def get_checks(message: types.Message):
+        if not pending_checks:
+            await message.answer("Нет чеков, ожидающих подтверждения.")
             return
 
-        try:
-            _, check_id_str = callback_query.data.split()
-            check_id = int(check_id_str)
-        except ValueError:
-            await callback_query.answer("Некорректный формат команды. Используйте /accept {номер чека}.")
-            return
+        for check_id, info in pending_checks.items():
+            user_id = info['user_id']
+            file_id = info['check_file_id']
+            level = info.get('level', 'Не указан')
+            caption = f"Чек #{check_id} от пользователя {user_id}, Уровень подписки: {level}."
 
-        if check_id not in pending_checks:
-            await callback_query.answer(f"Чек с ID {check_id} не найден.")
-            return
-
-        check_info = pending_checks.pop(check_id)
-        await run_in_executor(update_subscription_level, check_info['user_id'], check_info['level'])
-
-        await bot.send_message(check_info['user_id'], "Ваша подписка успешно активирована.",
-                               reply_markup=get_subscription_model_keyboard())
-        await callback_query.answer(f"Чек #{check_id} подтвержден. Подписка активирована.")
+            inline_kb = InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Подтвердить", callback_data=f"confirm_{check_id}"),
+                InlineKeyboardButton("Отклонить", callback_data=f"decline_{check_id}")
+            )
+            await bot.send_photo(message.from_user.id, file_id, caption=caption, reply_markup=inline_kb)
 
     @dp.message_handler(lambda message: message.text == "Создать модель", state='*')
     async def handle_create_model(message: types.Message):
@@ -168,25 +162,33 @@ def register_handlers(dp: Dispatcher):
         await ModelCreation.waiting_for_nickname.set()
         await message.answer("Введите никнейм модели:")
 
-    @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS)
-    async def get_checks(message: types.Message):
-        if not pending_checks:
-            await message.answer("Нет чеков, ожидающих подтверждения.")
-            return
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("confirm_"))
+    async def confirm_payment(callback_query: types.CallbackQuery):
+        _, check_id_str = callback_query.data.split("_")
+        check_id = int(check_id_str)
 
-        # Отправляем каждый чек администратору
-        for check_id, info in pending_checks.items():
-            user_id = info['user_id']
-            file_id = info['check_file_id']
-            level = info.get('level', 'Не указан')
-            caption = f"Чек #{check_id} от пользователя {user_id}, Уровень подписки: {level}."
+        if check_id in pending_checks:
+            check_info = pending_checks.pop(check_id)
+            update_subscription_level(check_info['user_id'], check_info['level'])
+            subscription_keyboard = get_subscription_model_keyboard()
+            await bot.send_message(check_info['user_id'], "Ваша подписка подтверждена.",
+                                   reply_markup=subscription_keyboard)
+            await callback_query.answer(f"Чек #{check_id} подтвержден.")
+        else:
+            await callback_query.answer("Чек не найден.")
 
-            # Создаем Inline кнопку "Подтвердить"
-            confirm_button = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("Подтвердить", callback_data=f"confirm_{check_id}")
-            )
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("decline_"))
+    async def decline_payment(callback_query: types.CallbackQuery):
+        _, check_id_str = callback_query.data.split("_")
+        check_id = int(check_id_str)
 
-            await bot.send_photo(message.from_user.id, file_id, caption=caption, reply_markup=confirm_button)
+        if check_id in pending_checks:
+            check_info = pending_checks.pop(check_id)
+            await bot.send_message(check_info['user_id'], "Ваша подписка отклонена.",
+                                   reply_markup=get_main_keyboard(check_info['user_id'], ADMINS))
+            await callback_query.answer(f"Чек #{check_id} отклонен.")
+        else:
+            await callback_query.answer("Чек не найден.")
 
     @dp.message_handler(lambda message: message.text == "Моя подписка")
     async def show_subscription_info(message: types.Message):
