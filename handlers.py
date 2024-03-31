@@ -7,9 +7,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from states import SubscriptionProcess, ModelCreation
 from database import cur, init_db, update_subscription_status
 import sqlite3 as sq
+import aiosqlite
 
 
-# Словарь для хранения информации о чеках, ожидающих проверки
 pending_checks = {}
 next_check_id = 1
 
@@ -23,7 +23,7 @@ async def subscription_level_chosen(message: types.Message, state: FSMContext):
         # Логика для возврата на предыдущий шаг
         await message.answer("Выберите действие.",
                              reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))
-        await state.finish()  # Завершаем текущее состояние
+        await state.finish()
         return
 
     async with state.proxy() as data:
@@ -41,7 +41,6 @@ async def check_submitted(message: types.Message, state: FSMContext):
     next_check_id += 1
     user_id = message.from_user.id
 
-    # Сохраняем информацию о чеке в pending_checks, но не отправляем администратору
     pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data.get('level')}
 
     await SubscriptionProcess.CheckSubmitted.set()
@@ -75,11 +74,9 @@ async def payment_confirmed(message: types.Message, state: FSMContext):
 
             pending_checks[check_id] = {'user_id': user_id, 'check_file_id': data['check_file_id'], 'level': data['level']}
 
-            # Создаем Inline кнопку "Подтвердить"
             confirm_button = InlineKeyboardMarkup().add(
                 InlineKeyboardButton("Подтвердить", callback_data=f"confirm_{check_id}")
             )
-            # Отправляем сообщение с фото чека и кнопкой администратору
             for admin_id in ADMINS:
                 await bot.send_photo(admin_id, data['check_file_id'], caption=f"Новый чек #{check_id} от пользователя {user_id}.", reply_markup=confirm_button)
 
@@ -127,6 +124,12 @@ async def model_price_received(message: types.Message, state: FSMContext):
     await ModelCreation.waiting_for_photo.set()
     await message.answer("Теперь отправьте фото модели.")
 
+async def is_user_subscribed(user_id: int) -> bool:
+    async with sq.connect('tg.db') as db:
+        cur = await db.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
+        sub_status = await cur.fetchone()
+        return sub_status and sub_status[0]
+
 
 def register_handlers(dp: Dispatcher):
     dp.register_message_handler(start_cmd, commands=['start'])
@@ -138,7 +141,7 @@ def register_handlers(dp: Dispatcher):
     dp.register_message_handler(model_nickname_received, state=ModelCreation.waiting_for_nickname)
     dp.register_message_handler(model_price_received, state=ModelCreation.waiting_for_price)
 
-    @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS)
+    @dp.message_handler(lambda message: message.text == "Подписчики", user_id=ADMINS, state="*")
     async def get_checks(message: types.Message):
         if not pending_checks:
             await message.answer("Нет чеков, ожидающих подтверждения.")
@@ -163,30 +166,27 @@ def register_handlers(dp: Dispatcher):
         await message.answer("Введите никнейм модели:")
 
     @dp.callback_query_handler(lambda c: c.data.startswith("confirm_"))
-    async def confirm_payment(callback_query: types.CallbackQuery):
+    async def confirm_payment(callback_query: types.CallbackQuery, state: FSMContext):
         _, check_id_str = callback_query.data.split("_")
         check_id = int(check_id_str)
 
-        # Проверяем, существует ли чек с таким ID в списке ожидающих проверку
         if check_id in pending_checks:
-            # Извлекаем информацию о чеке и удаляем ее из списка ожидающих
             check_info = pending_checks.pop(check_id)
 
-            # Обновляем статус подписки пользователя в базе данных
-            update_subscription_status(check_info['user_id'],
-                                       True)  # Предполагается, что функция update_subscription_status принимает ID пользователя и новый статус подписки
+            update_subscription_status(check_info['user_id'], True)
+            update_subscription_level(check_info['user_id'], check_info['level'])
 
-            # Отправляем сообщение пользователю о подтверждении его подписки
-            await bot.send_message(check_info['user_id'], "Ваша подписка успешно активирована.")
+            # Сбрасываем состояние пользователя
+            await state.finish()
+            subscription_keyboard = get_subscription_model_keyboard()
+            await bot.send_message(check_info['user_id'],
+                                   "Ваша подписка успешно активирована. Доступ к моделям открыт.",
+                                   reply_markup=subscription_keyboard)
 
-            # Уведомляем админа о том, что чек был успешно обработан
             await callback_query.answer("Подписка активирована и подтверждена.")
-
-            # Удаляем сообщение с чеком после подтверждения
             await bot.delete_message(chat_id=callback_query.message.chat.id,
                                      message_id=callback_query.message.message_id)
         else:
-            # Если чек с таким ID не найден в списке ожидающих
             await callback_query.answer("Чек не найден или уже обработан.", show_alert=True)
 
     @dp.callback_query_handler(lambda c: c.data and c.data.startswith("decline_"))
@@ -202,65 +202,60 @@ def register_handlers(dp: Dispatcher):
         else:
             await callback_query.answer("Чек не найден.")
 
-    @dp.message_handler(lambda message: message.text == "Моя подписка")
-    async def show_subscription_info(message: types.Message):
+    @dp.message_handler(lambda message: message.text == "Моя подписка", state="*")
+    async def handle_my_subscription(message: types.Message):
         user_id = message.from_user.id
-        with sq.connect('tg.db') as db:
-            cur = db.cursor()
-            # Запрос к базе данных для получения информации о подписке пользователя
-            cur.execute("SELECT sub_level, is_sub FROM subscribers WHERE user_id = ?", (user_id,))
-            subscription_info = cur.fetchone()
+        async with aiosqlite.connect('tg.db') as db:
+            cur = await db.execute("SELECT sub_level, is_sub FROM subscribers WHERE user_id = ?", (user_id,))
+            subscription_info = await cur.fetchone()
 
-        if subscription_info and subscription_info[1]:  # Проверяем, что подписка активна
-            # Формируем и отправляем сообщение с информацией о подписке
-            subscription_level = subscription_info[0]
-            response_text = f"Ваша подписка: {subscription_level}.\n\nДетали подписки: [Детали подписки здесь]"
-            await message.answer(response_text, parse_mode=types.ParseMode.MARKDOWN)
+        if subscription_info and subscription_info[1]:
+            subscription_level = subscription_info[0] if subscription_info[0] else "не указан"
+            await message.answer(f"Ваш уровень подписки: {subscription_level}. Подробнее о преимуществах подписки ...",
+                                 reply_markup=get_subscription_model_keyboard())
         else:
-            # Сообщение пользователю, если подписка не найдена или не активна
-            await message.answer("У вас нет активной подписки.")
+            await message.answer("У вас нет активной подписки. Для доступа к моделям приобретите подписку.",
+                                 reply_markup=get_main_keyboard(user_id, ADMINS))
 
-    @dp.message_handler(lambda message: message.text == "Модели")
+    @dp.message_handler(lambda message: message.text == "Модели", state="*")
     async def handle_models_request(message: types.Message):
         user_id = message.from_user.id
-        with sq.connect('tg.db') as db:
-            cur = db.cursor()
-            # Проверяем наличие подписки у пользователя
-            cur.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
-            sub_status = cur.fetchone()
-
-        if not sub_status or not sub_status[0]:
-            await message.answer("У вас нет подписки, сначала приобретите её.")
-            return
-
-        # Изменено на получение всех данных модели, включая photo и collected_amount
-        cur.execute("SELECT id, nickname, price, photo, collected_amount FROM models")
-        models = cur.fetchall()
+        async with aiosqlite.connect('tg.db') as db:
+            cur = await db.execute("""
+                SELECT id, nickname, price, photo, collected_amount
+                FROM models
+                ORDER BY (collected_amount >= price) DESC, collected_amount DESC
+            """)
+            models = await cur.fetchall()
 
         if not models:
             await message.answer("Моделей пока нет.")
             return
 
-        # Изменено на отправку каждой модели с фото, описанием и суммой поддержки напрямую
         for model in models:
             model_id, nickname, price, photo_file_id, collected_amount = model
             response_text = f"Никнейм: {nickname}\nЦель: {price}\nСобрано: {collected_amount}"
 
-            # Создаем inline кнопку "Поддержать"
-            support_button = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("Поддержать", callback_data=f"support_{model_id}")
-            )
-
-            if photo_file_id:
-                await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text,
-                                     reply_markup=support_button)
+            if collected_amount >= price:
+                # Если сбор завершился, отправляем без кнопки "Поддержать"
+                if photo_file_id:
+                    await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text)
+                else:
+                    await message.answer(response_text)
             else:
-                await message.answer(text=response_text, reply_markup=support_button)
+                # Если сбор не завершился, добавляем кнопку "Поддержать"
+                support_button = InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("Поддержать", callback_data=f"support_{model_id}")
+                )
+                if photo_file_id:
+                    await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text,
+                                         reply_markup=support_button)
+                else:
+                    await message.answer(response_text, reply_markup=support_button)
 
     @dp.message_handler(content_types=['photo'], state=ModelCreation.waiting_for_photo)
     async def model_photo_received(message: types.Message, state: FSMContext):
         async with state.proxy() as data:
-            # Предполагаем, что фотография одна и берем последнюю в списке
             data['photo'] = message.photo[-1].file_id
             # Сохраняем модель в базу данных
             with sq.connect('tg.db') as db:
@@ -305,29 +300,23 @@ def register_handlers(dp: Dispatcher):
             await bot.send_message(callback_query.from_user.id, "Модель не найдена.")
         await callback_query.answer()
 
-    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("support_"))
+    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("support_"), state="*")
     async def prompt_support_amount(callback_query: types.CallbackQuery, state: FSMContext):
         await state.update_data(model_id=callback_query.data.split("_")[1])
         await ModelCreation.waiting_for_support_amount.set()
         await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
         await callback_query.answer()
 
-    # Регистрация обработчика кнопки "Назад" с высоким приоритетом
     @dp.message_handler(lambda message: message.text == "Назад", state="*")
     async def handle_back_button(message: types.Message, state: FSMContext):
         current_state = await state.get_state()
         if current_state:
-            # Логика для определения, к какому набору кнопок возвращаться
-            await state.finish()  # Сбрасываем текущее состояние пользователя
+            await state.finish()
             if current_state.startswith("SubscriptionProcess"):
-                # Если пользователь находился в процессе подписки, возвращаем в главное меню
                 await message.answer("Что вы хотите сделать?",
                                      reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))
             elif current_state.startswith("ModelCreation"):
-                # Если пользователь находился в процессе создания модели, возвращаем в меню подписки
                 await subscription_chosen(message)
-            # Добавьте другие условия для обработки различных состояний
         else:
-            # Если состояние не было определено, возвращаем пользователя в главное меню
             await message.answer("Выберите действие.",
                                  reply_markup=get_main_keyboard(user_id=message.from_user.id, admins=ADMINS))

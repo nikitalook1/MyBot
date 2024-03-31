@@ -44,3 +44,17 @@ def update_subscription_status(user_id, is_sub):
 
 
 db, cur = init_db()
+
+
+#
+# def clear_subscribers_table():
+#     db = sq.connect('tg.db')  # Подключение к базе данных
+#     cur = db.cursor()  # Создаем курсор
+#
+#     # Удаляем все строки из таблицы subscribers
+#     cur.execute("DELETE FROM subscribers")
+#     db.commit()  # Применяем изменения
+#
+#     db.close()  # Закрываем подключение к базе данных
+#
+# clear_subscribers_table()
