@@ -220,38 +220,50 @@ def register_handlers(dp: Dispatcher):
     @dp.message_handler(lambda message: message.text == "Модели", state="*")
     async def handle_models_request(message: types.Message):
         user_id = message.from_user.id
+
+        # Открываем новое соединение с базой данных для проверки статуса подписки
         async with aiosqlite.connect('tg.db') as db:
-            cur = await db.execute("""
+            async with db.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,)) as cursor:
+                sub_status = await cursor.fetchone()
+                if not sub_status or not sub_status[0]:
+                    # Если у пользователя нет активной подписки
+                    await message.answer("У вас еще нет подписки. Для доступа к моделям приобретите подписку.",
+                                         reply_markup=get_main_keyboard(user_id, ADMINS))
+                    return
+
+        # Открываем новое соединение с базой данных для получения списка моделей
+        async with aiosqlite.connect('tg.db') as db:
+            async with db.execute("""
                 SELECT id, nickname, price, photo, collected_amount
                 FROM models
                 ORDER BY (collected_amount >= price) DESC, collected_amount DESC
-            """)
-            models = await cur.fetchall()
+            """) as cursor:
+                models = await cursor.fetchall()
 
-        if not models:
-            await message.answer("Моделей пока нет.")
-            return
+                if not models:
+                    await message.answer("Моделей пока нет.")
+                    return
 
-        for model in models:
-            model_id, nickname, price, photo_file_id, collected_amount = model
-            response_text = f"Никнейм: {nickname}\nЦель: {price}\nСобрано: {collected_amount}"
+                for model in models:
+                    model_id, nickname, price, photo_file_id, collected_amount = model
+                    response_text = f"Никнейм: {nickname}\nЦель: {price}\nСобрано: {collected_amount}"
 
-            if collected_amount >= price:
-                # Если сбор завершился, отправляем без кнопки "Поддержать"
-                if photo_file_id:
-                    await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text)
-                else:
-                    await message.answer(response_text)
-            else:
-                # Если сбор не завершился, добавляем кнопку "Поддержать"
-                support_button = InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("Поддержать", callback_data=f"support_{model_id}")
-                )
-                if photo_file_id:
-                    await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text,
-                                         reply_markup=support_button)
-                else:
-                    await message.answer(response_text, reply_markup=support_button)
+                    if collected_amount >= price:
+                        # Если сбор завершился, отправляем без кнопки "Поддержать"
+                        if photo_file_id:
+                            await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text)
+                        else:
+                            await message.answer(response_text)
+                    else:
+                        # Если сбор не завершился, добавляем кнопку "Поддержать"
+                        support_button = InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("Поддержать", callback_data=f"support_{model_id}")
+                        )
+                        if photo_file_id:
+                            await bot.send_photo(message.chat.id, photo=photo_file_id, caption=response_text,
+                                                 reply_markup=support_button)
+                        else:
+                            await message.answer(response_text, reply_markup=support_button)
 
     @dp.message_handler(content_types=['photo'], state=ModelCreation.waiting_for_photo)
     async def model_photo_received(message: types.Message, state: FSMContext):

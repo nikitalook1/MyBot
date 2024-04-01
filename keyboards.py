@@ -8,7 +8,7 @@ check_cb = CallbackData("check", "user_id", "action")
 def get_main_keyboard(user_id, admins):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
     markup.add(KeyboardButton(text="Подписка"))
-    markup.add(KeyboardButton(text="Модель"))
+    markup.add(KeyboardButton(text="Модели"))
     return markup
 
 def get_subscription_model_keyboard():
