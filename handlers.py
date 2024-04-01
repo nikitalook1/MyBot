@@ -1,9 +1,9 @@
 from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from keyboards import get_main_keyboard, get_subscription_levels_keyboard, get_admin_keyboard, get_post_payment_keyboard, get_subscription_model_keyboard
-from config import ADMINS, bot
+from config import ADMINS, bot, YOOTOKEN
 import asyncio
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, PreCheckoutQuery, Message
 from states import SubscriptionProcess, ModelCreation
 from database import cur, init_db, update_subscription_status
 import sqlite3 as sq
@@ -129,6 +129,11 @@ async def is_user_subscribed(user_id: int) -> bool:
         cur = await db.execute("SELECT is_sub FROM subscribers WHERE user_id = ?", (user_id,))
         sub_status = await cur.fetchone()
         return sub_status and sub_status[0]
+
+def get_model_id_from_payload(payload):
+    # Здесь логика извлечения ID модели из payload
+    # Например, если payload это 'donation_1', то нам нужно вернуть '1'
+    return payload.split('_')[1]
 
 
 def register_handlers(dp: Dispatcher):
@@ -312,12 +317,55 @@ def register_handlers(dp: Dispatcher):
             await bot.send_message(callback_query.from_user.id, "Модель не найдена.")
         await callback_query.answer()
 
-    @dp.callback_query_handler(lambda c: c.data and c.data.startswith("support_"), state="*")
-    async def prompt_support_amount(callback_query: types.CallbackQuery, state: FSMContext):
-        await state.update_data(model_id=callback_query.data.split("_")[1])
-        await ModelCreation.waiting_for_support_amount.set()
-        await bot.send_message(callback_query.from_user.id, "Введите сумму вашей поддержки:")
-        await callback_query.answer()
+    @dp.callback_query_handler(lambda c: c.data.startswith("support_"), state="*")
+    async def prompt_donation_invoice(callback_query: types.CallbackQuery, state: FSMContext):
+        await callback_query.answer()  # Ответить на callback_query, чтобы убрать "часики" в интерфейсе пользователя
+        model_id = callback_query.data.split("_")[1]  # Извлечение ID модели из callback_data
+
+        # Определите сумму и описание пожертвования
+        donation_amount = 150*100  # Сумма пожертвования в копейках (например, 15000 для 150 рублей)
+        donation_description = "Пожертвование на поддержку модели №" + model_id
+
+        # Отправить счет для оплаты
+        await bot.send_invoice(
+            chat_id=callback_query.from_user.id,
+            title="Пожертвование",
+            description=donation_description,
+            payload=f"donation_{model_id}",  # Полезная нагрузка, чтобы идентифицировать транзакцию
+            provider_token=YOOTOKEN,
+            currency="RUB",
+            start_parameter="create_invoice_donation",
+            prices=[{"label": "Руб", "amount": donation_amount}]
+        )
+
+    @dp.pre_checkout_query_handler()
+    async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
+        # Здесь вы можете добавить дополнительные проверки перед подтверждением оплаты.
+        # Например, проверить, что платежная система приняла запрос, или что товар/услуга все еще доступны.
+
+        # В этом примере мы просто всегда подтверждаем предварительный запрос на оплату.
+        await bot.answer_pre_checkout_query(pre_checkout_query_id=pre_checkout_query.id, ok=True)
+        # Отправляем пользователю сообщение о том, что его платеж обрабатывается.
+        await bot.send_message(pre_checkout_query.from_user.id, 'Спасибо за ваш платеж! Мы обрабатываем его.')
+
+    @dp.message_handler(content_types=['successful_payment'])
+    async def handle_successful_payment(message: Message):
+        # Обработка успешного платежа
+        await message.reply('Спасибо за ваше пожертвование!')
+
+        # Извлекаем ID модели из payload
+        model_id = get_model_id_from_payload(message.successful_payment.invoice_payload)
+
+        # Сумма пожертвования в рублях (т.к. сумма в successful_payment указывается в минимальных единицах валюты, например, в копейках)
+        amount_rub = message.successful_payment.total_amount / 100
+
+        # Обновляем сумму собранных средств в базе данных
+        async with aiosqlite.connect('tg.db') as db:
+            await db.execute(
+                "UPDATE models SET collected_amount = collected_amount + ? WHERE id = ?",
+                (amount_rub, model_id)
+            )
+            await db.commit()
 
     @dp.message_handler(lambda message: message.text == "Назад", state="*")
     async def handle_back_button(message: types.Message, state: FSMContext):
