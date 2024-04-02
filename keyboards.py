@@ -15,7 +15,7 @@ def get_subscription_model_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.add(KeyboardButton("моя подписка"))
     keyboard.add(KeyboardButton("модель"))
-    return keyboard
+    return keyboard#
 
 
 def get_admin_keyboard():

@@ -323,7 +323,7 @@ def register_handlers(dp: Dispatcher):
         model_id = callback_query.data.split("_")[1]  # Извлечение ID модели из callback_data
 
         # Определите сумму и описание пожертвования
-        donation_amount = 150*100  # Сумма пожертвования в копейках (например, 15000 для 150 рублей)
+        donation_amount = 1000*100  # Сумма пожертвования в копейках (например, 15000 для 150 рублей)
         donation_description = "Пожертвование на поддержку модели №" + model_id
 
         # Отправить счет для оплаты

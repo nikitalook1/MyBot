@@ -58,3 +58,4 @@ db, cur = init_db()
 #     db.close()  # Закрываем подключение к базе данных
 #
 # clear_subscribers_table()
+#
